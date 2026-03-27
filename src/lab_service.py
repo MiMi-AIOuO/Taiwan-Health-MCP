@@ -419,9 +419,10 @@ class LabService:
         for test in common_tests:
             cursor.execute(
                 """
-                INSERT OR IGNORE INTO loinc_mapping
+                INSERT INTO loinc_mapping
                 (loinc_code, loinc_name_en, loinc_name_zh, common_name_zh, category, specimen_type, unit, method)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (loinc_code) DO NOTHING
             """,
                 (
                     test["loinc_code"],
