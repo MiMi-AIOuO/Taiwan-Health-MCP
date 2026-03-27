@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import io
 import json
 import os
-import sqlite3
+import db_adapter as sqlite3
 import threading
 import zipfile
 
@@ -121,7 +121,17 @@ class HealthFoodService:
     def _check_startup_update(self):
         """Checks on startup if the database is missing or outdated."""
         should_update = False
-        if not os.path.exists(self.db_path):
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                should_update = not sqlite3.table_exists(conn, "health_foods")
+                conn.close()
+                if should_update:
+                    log_info("Health food table not found in PostgreSQL. Initializing...")
+            except Exception as e:
+                log_error(f"Error checking PostgreSQL health food tables: {e}")
+                should_update = True
+        elif not os.path.exists(self.db_path):
             log_info("Health Food DB not found. Initializing full download...")
             should_update = True
         elif os.path.getsize(self.db_path) == 0:
@@ -147,6 +157,17 @@ class HealthFoodService:
             # Run in a separate thread to avoid blocking server startup
             t = threading.Thread(target=self._update_data)
             t.start()
+
+    def _db_ready(self) -> bool:
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                ok = sqlite3.table_exists(conn, "health_foods")
+                conn.close()
+                return ok
+            except Exception:
+                return False
+        return os.path.exists(self.db_path)
 
     def _update_data(self):
         """Download and update health foods database."""
@@ -246,7 +267,9 @@ class HealthFoodService:
         except Exception as e:
             log_error(f"Health food update failed: {e}")
             conn.close()
-            if os.path.exists(self.db_path):
+            if not getattr(sqlite3, "USE_POSTGRES", False) and os.path.exists(
+                self.db_path
+            ):
                 os.remove(self.db_path)
                 log_info(f"Removed incomplete database: {self.db_path}")
             return
@@ -259,7 +282,7 @@ class HealthFoodService:
         """
         Search for health foods by name or health benefit.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "資料庫初始化中，請稍候..."
 
         conn = sqlite3.connect(self.db_path)
@@ -295,7 +318,7 @@ class HealthFoodService:
         """
         Get comprehensive details for a specific health food by license number.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "資料庫初始化中，請稍候..."
 
         conn = sqlite3.connect(self.db_path)
@@ -358,7 +381,7 @@ class HealthFoodService:
 
         ⚠️ 重要：此功能嚴格遵循台灣法規，健康食品僅供輔助保健，不可取代醫療。
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "資料庫初始化中，請稍候..."
 
         # Step 1: 獲取疾病資訊
@@ -382,7 +405,7 @@ class HealthFoodService:
             recommended_benefits = self.DISEASE_BENEFIT_MAPPING[icd_code]
             mapping_info = f"✓ 系統已識別 ICD 碼: {icd_code}\n✓ 建議保健功效: {', '.join(recommended_benefits)}"
         else:
-            mapping_info = f"ℹ️ 未找到 ICD 碼對應，將使用關鍵字進行通用搜尋"
+            mapping_info = "ℹ️ 未找到 ICD 碼對應，將使用關鍵字進行通用搜尋"
             recommended_benefits = [diagnosis_keyword]
 
         # Step 3: 搜尋相關健康食品

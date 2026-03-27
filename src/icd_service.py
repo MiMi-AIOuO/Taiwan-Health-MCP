@@ -1,6 +1,6 @@
 import json
 import os
-import sqlite3
+import db_adapter as sqlite3
 
 import pandas as pd
 
@@ -20,7 +20,22 @@ class ICDService:
         Checks if the SQLite database exists. If not, creates it by reading the raw Excel file.
         Parses ICD-10-CM and ICD-10-PCS sheets and builds indices for hierarchical queries.
         """
-        if os.path.exists(self.db_path):
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            # In PostgreSQL mode, db_path is not meaningful. Check existing tables instead.
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1 FROM diagnoses LIMIT 1")
+                conn.close()
+                log_info("ICD tables already exist in PostgreSQL; skip initialization.")
+                return
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                log_info("ICD tables not found in PostgreSQL. Initializing from Excel...")
+        elif os.path.exists(self.db_path):
             if os.path.getsize(self.db_path) == 0:
                 log_info("ICD Database is empty. Removing and re-initializing...")
                 os.remove(self.db_path)
@@ -55,8 +70,9 @@ class ICDService:
 
                 # Feature Engineering: Create 'category' (first 3 chars) for hierarchical logic
                 df["category"] = df["code"].astype(str).str[:3]
-
-                df.to_sql("diagnoses", conn, index=False, if_exists="replace")
+                self._replace_table_from_df(
+                    conn, "diagnoses", ["code", "name_en", "name_zh", "category"], df
+                )
 
             # 2. Process ICD-10-PCS (Procedures)
             sheet_pcs = next(
@@ -68,7 +84,9 @@ class ICDService:
                 df = df.iloc[:, [0, 2, 3]]
                 df.columns = ["code", "name_en", "name_zh"]
                 df = df.dropna(subset=["code"])
-                df.to_sql("procedures", conn, index=False, if_exists="replace")
+                self._replace_table_from_df(
+                    conn, "procedures", ["code", "name_en", "name_zh"], df
+                )
 
             # Create indices for performance
             indices = [
@@ -86,16 +104,50 @@ class ICDService:
         except Exception as e:
             log_error(f"Database initialization failed: {e}")
             conn.close()
-            if os.path.exists(self.db_path):
+            if not getattr(sqlite3, "USE_POSTGRES", False) and os.path.exists(
+                self.db_path
+            ):
                 os.remove(self.db_path)
                 log_info(f"Removed incomplete database: {self.db_path}")
             raise
         finally:
             conn.close()
 
+    def _replace_table_from_df(self, conn, table_name: str, columns: list[str], df):
+        """
+        Replace table contents from a DataFrame in a DB-agnostic way.
+        Works for both sqlite and postgres adapter.
+        """
+        cursor = conn.cursor()
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        col_defs = ", ".join([f"{col} TEXT" for col in columns])
+        cursor.execute(f"CREATE TABLE {table_name} ({col_defs})")
+
+        placeholders = ", ".join(["?" for _ in columns])
+        insert_sql = (
+            f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
+        )
+        rows = []
+        for row in df[columns].itertuples(index=False, name=None):
+            rows.append(tuple("" if v is None else str(v) for v in row))
+        if rows:
+            cursor.executemany(insert_sql, rows)
+        conn.commit()
+
+    def _db_ready(self) -> bool:
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                exists = sqlite3.table_exists(conn, "diagnoses")
+                conn.close()
+                return exists
+            except Exception:
+                return False
+        return os.path.exists(self.db_path)
+
     def _query_db(self, sql: str, params: tuple = ()) -> list:
         """Helper function to execute SQL queries and return results as a list of dicts."""
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             log_error(f"Database not found at: {self.db_path}")
             return []
 

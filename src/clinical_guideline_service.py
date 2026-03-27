@@ -5,7 +5,7 @@ Clinical Guideline Service - 臨床診療指引整合服務
 
 import json
 import os
-import sqlite3
+import db_adapter as sqlite3
 from typing import Dict, Optional
 
 from utils import log_error, log_info
@@ -29,7 +29,19 @@ class ClinicalGuidelineService:
 
     def _initialize_database(self):
         """初始化資料庫，建立臨床指引資料表"""
-        if os.path.exists(self.db_path):
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                if sqlite3.table_exists(conn, "disease_guidelines"):
+                    conn.close()
+                    log_info(
+                        "Clinical guideline tables already exist in PostgreSQL; skip initialization."
+                    )
+                    return
+                conn.close()
+            except Exception:
+                pass
+        elif os.path.exists(self.db_path):
             if os.path.getsize(self.db_path) == 0:
                 log_info("Clinical guideline database is empty. Removing and re-initializing...")
                 os.remove(self.db_path)
@@ -141,7 +153,9 @@ class ClinicalGuidelineService:
             log_error(f"Failed to initialize clinical guideline database: {e}")
             conn.rollback()
             conn.close()
-            if os.path.exists(self.db_path):
+            if not getattr(sqlite3, "USE_POSTGRES", False) and os.path.exists(
+                self.db_path
+            ):
                 os.remove(self.db_path)
                 log_info(f"Removed incomplete database: {self.db_path}")
             raise

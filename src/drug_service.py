@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import io
 import json
 import os
-import sqlite3
+import db_adapter as sqlite3
 import threading
 import zipfile
 
@@ -56,7 +56,17 @@ class DrugService:
     def _check_startup_update(self):
         """Checks on startup if the database is missing or outdated."""
         should_update = False
-        if not os.path.exists(self.db_path):
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                should_update = not sqlite3.table_exists(conn, "licenses")
+                conn.close()
+                if should_update:
+                    log_info("Drug tables not found in PostgreSQL. Initializing...")
+            except Exception as e:
+                log_error(f"Error checking PostgreSQL drug tables: {e}")
+                should_update = True
+        elif not os.path.exists(self.db_path):
             log_info("Drug DB not found. Initializing full download...")
             should_update = True
         elif os.path.getsize(self.db_path) == 0:
@@ -82,6 +92,17 @@ class DrugService:
             # Run in a separate thread to avoid blocking server startup
             t = threading.Thread(target=self._update_all_data)
             t.start()
+
+    def _db_ready(self) -> bool:
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                ok = sqlite3.table_exists(conn, "licenses")
+                conn.close()
+                return ok
+            except Exception:
+                return False
+        return os.path.exists(self.db_path)
 
     def _download_and_insert(self, url, table_name, conn, columns_map, pk_col=None):
         """
@@ -251,7 +272,9 @@ class DrugService:
         except Exception as e:
             log_error(f"Global update failed: {e}")
             conn.close()
-            if os.path.exists(self.db_path):
+            if not getattr(sqlite3, "USE_POSTGRES", False) and os.path.exists(
+                self.db_path
+            ):
                 os.remove(self.db_path)
                 log_info(f"Removed incomplete database: {self.db_path}")
             return
@@ -265,7 +288,7 @@ class DrugService:
         Search for drugs by name (ZH/EN) or indication.
         Returns JSON with search results.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return json.dumps({"error": "DB initializing..."})
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -301,7 +324,7 @@ class DrugService:
         """
         Get comprehensive details by joining all tables.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "DB initializing..."
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -367,7 +390,7 @@ class DrugService:
         Get comprehensive drug details as JSON by license ID.
         Used by FHIR Medication Service.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return json.dumps({"error": "DB initializing..."})
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -465,7 +488,7 @@ class DrugService:
         """
         Identify pill based on visual description (Shape, Color, Marking).
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "DB initializing..."
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()

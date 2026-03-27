@@ -5,7 +5,7 @@ Laboratory Service - LOINC 碼對照與檢驗參考值查詢
 
 import json
 import os
-import sqlite3
+import db_adapter as sqlite3
 from typing import Dict, List, Literal, Optional
 
 from utils import log_error, log_info
@@ -34,7 +34,19 @@ class LabService:
 
     def _initialize_database(self):
         """初始化資料庫，建立 LOINC 對照表與參考值表"""
-        if os.path.exists(self.db_path):
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                if sqlite3.table_exists(conn, "loinc_mapping") and sqlite3.table_exists(
+                    conn, "reference_ranges"
+                ):
+                    conn.close()
+                    log_info("Lab tables already exist in PostgreSQL; skip initialization.")
+                    return
+                conn.close()
+            except Exception:
+                pass
+        elif os.path.exists(self.db_path):
             if os.path.getsize(self.db_path) == 0:
                 log_info("Lab database is empty. Removing and re-initializing...")
                 os.remove(self.db_path)
@@ -108,7 +120,9 @@ class LabService:
             log_error(f"Failed to initialize lab database: {e}")
             conn.rollback()
             conn.close()
-            if os.path.exists(self.db_path):
+            if not getattr(sqlite3, "USE_POSTGRES", False) and os.path.exists(
+                self.db_path
+            ):
                 os.remove(self.db_path)
                 log_info(f"Removed incomplete database: {self.db_path}")
             raise

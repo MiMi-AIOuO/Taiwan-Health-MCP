@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import io
 import json
 import os
-import sqlite3
+import db_adapter as sqlite3
 import threading
 import zipfile
 
@@ -55,7 +55,19 @@ class FoodNutritionService:
     def _check_startup_update(self):
         """Checks on startup if the database is missing or outdated."""
         should_update = False
-        if not os.path.exists(self.db_path):
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                has_nutrition = sqlite3.table_exists(conn, "nutrition")
+                has_ingredients = sqlite3.table_exists(conn, "food_ingredients")
+                should_update = not (has_nutrition and has_ingredients)
+                conn.close()
+                if should_update:
+                    log_info("Food nutrition tables not found in PostgreSQL. Initializing...")
+            except Exception as e:
+                log_error(f"Error checking PostgreSQL food nutrition tables: {e}")
+                should_update = True
+        elif not os.path.exists(self.db_path):
             log_info("Food Nutrition DB not found. Initializing full download...")
             should_update = True
         elif os.path.getsize(self.db_path) == 0:
@@ -83,6 +95,18 @@ class FoodNutritionService:
             # Run in a separate thread to avoid blocking server startup
             t = threading.Thread(target=self._update_all_data)
             t.start()
+
+    def _db_ready(self) -> bool:
+        if getattr(sqlite3, "USE_POSTGRES", False):
+            try:
+                conn = sqlite3.connect(self.db_path)
+                has_nutrition = sqlite3.table_exists(conn, "nutrition")
+                has_ingredients = sqlite3.table_exists(conn, "food_ingredients")
+                conn.close()
+                return has_nutrition and has_ingredients
+            except Exception:
+                return False
+        return os.path.exists(self.db_path)
 
     def _download_and_insert(self, url, table_name, conn, columns_map):
         """
@@ -221,7 +245,9 @@ class FoodNutritionService:
         except Exception as e:
             log_error(f"Food nutrition update failed: {e}")
             conn.close()
-            if os.path.exists(self.db_path):
+            if not getattr(sqlite3, "USE_POSTGRES", False) and os.path.exists(
+                self.db_path
+            ):
                 os.remove(self.db_path)
                 log_info(f"Removed incomplete database: {self.db_path}")
             return
@@ -234,7 +260,7 @@ class FoodNutritionService:
         """
         Search for nutritional information of foods.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "資料庫初始化中，請稍候..."
 
         conn = sqlite3.connect(self.db_path)
@@ -288,7 +314,7 @@ class FoodNutritionService:
         """
         Get comprehensive nutritional breakdown for a specific food.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "資料庫初始化中，請稍候..."
 
         conn = sqlite3.connect(self.db_path)
@@ -354,7 +380,7 @@ class FoodNutritionService:
         """
         Search for food ingredients/materials in the regulatory database.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "資料庫初始化中，請稍候..."
 
         conn = sqlite3.connect(self.db_path)
@@ -391,7 +417,7 @@ class FoodNutritionService:
         """
         Get all approved ingredients in a specific category.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "資料庫初始化中，請稍候..."
 
         conn = sqlite3.connect(self.db_path)
@@ -424,7 +450,7 @@ class FoodNutritionService:
         """
         Analyze nutritional composition of a meal/diet plan.
         """
-        if not os.path.exists(self.db_path):
+        if not self._db_ready():
             return "資料庫初始化中，請稍候..."
 
         results = []
