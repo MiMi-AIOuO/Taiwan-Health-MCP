@@ -31,16 +31,27 @@ class FoodNutritionService:
             "ingredients": "https://data.fda.gov.tw/data/opendata/export/4/json",
         }
 
-        # Initialize the scheduler
-        self.scheduler = BackgroundScheduler()
-        # Schedule the update to run every Monday at 00:00
-        self.scheduler.add_job(
-            self._update_all_data, "cron", day_of_week="mon", hour=0, minute=0
+        self.enable_background_updates = (
+            os.getenv("ENABLE_BACKGROUND_UPDATES", "true").lower() == "true"
         )
-        self.scheduler.start()
+        self.enable_startup_update = (
+            os.getenv("ENABLE_STARTUP_UPDATE", "true").lower() == "true"
+        )
 
-        # Check if we need to run an initial update on startup
-        self._check_startup_update()
+        if self.enable_background_updates:
+            self.scheduler = BackgroundScheduler()
+            self.scheduler.add_job(
+                self._update_all_data, "cron", day_of_week="mon", hour=0, minute=0
+            )
+            self.scheduler.start()
+        else:
+            self.scheduler = None
+            log_info("FoodNutritionService: ENABLE_BACKGROUND_UPDATES=false, scheduler off")
+
+        if self.enable_startup_update:
+            self._check_startup_update()
+        else:
+            log_info("FoodNutritionService: ENABLE_STARTUP_UPDATE=false, skip startup ETL")
 
     def _get_last_monday(self):
         """Calculates the date of the most recent Monday."""
